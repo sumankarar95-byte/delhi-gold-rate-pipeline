@@ -2,15 +2,23 @@
 # All business levers live here so they can be changed without touching code.
 
 sources:
-  gold_usd_oz: "GC=F"     # COMEX gold futures, USD per troy ounce
-  usd_inr: "INR=X"        # USD/INR spot
-  backfill_years: 6       # history pulled on first run
+  yahoo:                    # long history of international drivers
+    gold_usd_oz: "GC=F"     # COMEX gold futures, USD per troy ounce
+    usd_inr: "INR=X"        # USD/INR spot
+  backfill_years: 6         # history pulled on first run
+  ibja:                     # India's benchmark rate (official, licensed API)
+    url: "https://ibjarates.com/API/GoldRates/"
+    uat_url: "https://uat.ibjarates.com/API/GoldRates/"
+    environment: production # production | uat
+    token_env: IBJA_API_TOKEN   # never commit the token; set it as an env var / CI secret
+    lookback_days: 29       # API serves at most the last 30 days per call
+    benchmark_purity: "999"
 
 pricing:                  # landed-cost model for Delhi 24K, ₹ per 10 g
   grams_per_troy_oz: 31.1035
   import_duty_pct: 6.0    # 5% BCD + 1% AIDC (Union Budget Jul-2024)
   gst_pct: 3.0
-  local_premium_inr_10g: 0  # set via --calibrate with today's real Delhi rate
+  local_premium_inr_10g: 0  # fallback only (no IBJA data): set via `calibrate`
   purities:
     "24K": 0.999
     "22K": 0.916
@@ -25,11 +33,14 @@ model:
   horizons: {next_day: 1, one_week: 5, one_month: 22}   # trading days
   vol_halflife: 30
   drift_window: 60
-  backtest_days: 250
-  backtest_step: 5
+  backtest_days: 500
+  backtest_step: 1    # every day: more errors for conformal calibration
   confidence: 0.90
+  min_improvement_vs_naive: 0.02   # a model must beat "no change" by 2% MAE to be used
+  basis_daily_vol_prior: 0.004     # IBJA-vs-international basis noise until enough IBJA history
 
 paths:
   bronze: data/bronze
+  bronze_ibja: data/bronze_ibja
   warehouse: data/warehouse.duckdb
   reports: reports

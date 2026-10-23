@@ -3,7 +3,8 @@
 
     python -m goldpipe.pipeline run              # full pipeline
     python -m goldpipe.pipeline extract|transform|quality|model|report
-    python -m goldpipe.pipeline calibrate 128450 # today's real Delhi 24K ₹/10g
+    python -m goldpipe.pipeline calibrate 128450 # fallback when no IBJA data: today's real 24K ₹/10g
+    python -m goldpipe.pipeline import-ibja rates.csv   # seed IBJA history
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ import uuid
 import warnings
 from datetime import datetime
 
-from . import extract, model, quality, report, warehouse
+from . import extract, extract_ibja, model, quality, report, warehouse
 from .config import ROOT, Settings
 
 log = logging.getLogger("goldpipe")
@@ -44,7 +45,10 @@ def stage_report(settings, run_id, result=None, dq=None):
                              "(SELECT max(run_id) FROM audit.dq_results)").df()
         board = con.execute("SELECT * FROM gold.v_rate_board WHERE trade_date = "
                             "(SELECT max(trade_date) FROM gold.fact_delhi_rate) ORDER BY fineness DESC").df()
-        return report.render(settings, run_id, result, dq, board)
+        anchor = con.execute("SELECT * FROM gold.anchor").df().iloc[0].to_dict()
+        recon = con.execute("SELECT * FROM gold.fact_ibja_reconciliation "
+                            "ORDER BY rate_date DESC, session DESC LIMIT 8").df()
+        return report.render(settings, run_id, result, dq, board, anchor, recon)
 
 
 def calibrate(settings, actual_rate: float) -> None:
@@ -62,8 +66,9 @@ def calibrate(settings, actual_rate: float) -> None:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="goldpipe")
-    ap.add_argument("stage", choices=["run", "extract", "transform", "quality", "model", "report", "calibrate"])
-    ap.add_argument("value", nargs="?", type=float, help="actual Delhi 24K ₹/10g for calibrate")
+    ap.add_argument("stage", choices=["run", "extract", "transform", "quality", "model", "report",
+                                      "calibrate", "import-ibja"])
+    ap.add_argument("value", nargs="?", help="calibrate: actual Delhi 24K ₹/10g; import-ibja: CSV path")
     ap.add_argument("--config", default=ROOT / "config" / "settings.yaml")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S")
@@ -73,6 +78,11 @@ def main(argv=None) -> int:
     try:
         if args.stage in ("run", "extract"):
             extract.run(settings)
+            extract_ibja.run(settings)
+        if args.stage == "import-ibja":
+            if not args.value:
+                ap.error("import-ibja needs a CSV path")
+            extract_ibja.import_csv(settings, args.value)
         if args.stage in ("run", "transform"):
             warehouse.run(settings)
         dq = stage_quality(settings, run_id) if args.stage in ("run", "quality") else None
@@ -84,7 +94,7 @@ def main(argv=None) -> int:
         if args.stage == "calibrate":
             if args.value is None:
                 ap.error("calibrate needs today's actual Delhi 24K rate, e.g. calibrate 128450")
-            calibrate(settings, args.value)
+            calibrate(settings, float(args.value))
     except Exception:
         log.exception("pipeline failed (run_id=%s)", run_id)
         return 1

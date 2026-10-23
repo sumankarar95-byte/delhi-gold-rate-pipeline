@@ -1,7 +1,7 @@
 """Airflow DAG: one task per stage so failures retry in isolation.
 
-Schedule: 18:30 IST (13:00 UTC) on weekdays, after the Indian session and
-before the next day's opening board is set.
+Schedule: 18:30 IST (13:00 UTC) on weekdays, right after IBJA's ~18:10 PM
+print. IBJA_API_TOKEN comes from an Airflow Variable / secrets backend.
 """
 from datetime import datetime, timedelta
 

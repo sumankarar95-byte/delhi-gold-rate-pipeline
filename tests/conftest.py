@@ -12,9 +12,9 @@ from goldpipe.config import ROOT, Settings
 @pytest.fixture
 def settings(tmp_path):
     raw = yaml.safe_load((ROOT / "config" / "settings.yaml").read_text())
-    raw["paths"] = {"bronze": str(tmp_path / "bronze"), "warehouse": str(tmp_path / "wh.duckdb"),
-                    "reports": str(tmp_path / "reports")}
-    raw["model"].update(backtest_days=40, backtest_step=10)
+    raw["paths"] = {"bronze": str(tmp_path / "bronze"), "bronze_ibja": str(tmp_path / "bronze_ibja"),
+                    "warehouse": str(tmp_path / "wh.duckdb"), "reports": str(tmp_path / "reports")}
+    raw["model"].update(backtest_days=120, backtest_step=2)
     return Settings(raw)
 
 
@@ -35,3 +35,15 @@ def land(settings, df: pd.DataFrame, ingest: str = "2026-01-01", ingested_at=Non
     part.mkdir(parents=True, exist_ok=True)
     df = df.assign(ingested_at=ingested_at or datetime.now(timezone.utc))
     df.to_parquet(part / f"market_{len(list(part.iterdir()))}.parquet", index=False)
+
+
+def ibja_rows(days, rate_999: float, sessions=("AM", "PM")) -> pd.DataFrame:
+    """IBJA-shaped rows (ex-GST ₹/10g) with consistent purity ratios."""
+    rows = []
+    for d in days:
+        for s in sessions:
+            for purity, fin in (("999", 0.999), ("916", 0.916)):
+                rows.append({"rate_date": d, "session": s, "purity": purity,
+                             "gold_rate_inr_10g": round(rate_999 * fin / 0.999), "silver_rate_inr_kg": 200000.0,
+                             "source": "test"})
+    return pd.DataFrame(rows)

@@ -25,7 +25,8 @@ def _rows(cells: list[list[str]]) -> str:
     return "".join("<tr>" + "".join(f"<td>{c}</td>" for c in r) + "</tr>" for r in cells)
 
 
-def render(settings, run_id: str, result: dict, dq: pd.DataFrame, board: pd.DataFrame):
+def render(settings, run_id: str, result: dict, dq: pd.DataFrame, board: pd.DataFrame,
+           anchor: dict, recon: pd.DataFrame):
     fc, bt, sig, hist = result["forecast"], result["backtest"], result["signal"], result["history"]
     as_of = result["as_of"]
     recent = hist.iloc[-260:]
@@ -46,10 +47,29 @@ def render(settings, run_id: str, result: dict, dq: pd.DataFrame, board: pd.Data
     board_rows = _rows([[f"<b>{r.karat}</b>", inr(r.market_inr_10g), inr(r.market_inr_g),
                          inr(r.we_buy_inr_10g), inr(r.we_sell_inr_10g)] for r in board.itertuples()])
     fc_rows = _rows([[HORIZON_LABEL[r.horizon], inr(r.point), f"{inr(r.lower)} – {inr(r.upper)}",
-                      f"{r.prob_up:.0%}"] for r in fc.itertuples()])
-    bt_rows = _rows([[HORIZON_LABEL[r.horizon], f"{r.mape_model_pct:.2f}%", f"{r.mape_naive_pct:.2f}%",
-                      "✓" if r.beats_naive else "✗", f"{r.direction_hit_pct:.0f}%",
-                      f"{r.band_coverage_pct:.0f}%"] for r in bt.itertuples()])
+                      f"{r.prob_up:.0%}", r.model] for r in fc.sort_values("trading_days").itertuples()])
+    bt_rows = _rows([[HORIZON_LABEL[r.horizon] if r.candidate == "naive" else "",
+                      ("<b>" + r.candidate + " ✓</b>") if r.selected else r.candidate,
+                      f"{r.mae_pct:.2f}%", f"{r.improvement_vs_naive_pct:+.1f}%", "–" if r.candidate == "naive" else f"{r.direction_hit_pct:.0f}%",
+                      f"{r.holdout_coverage_pct:.0f}%" if r.selected else ""]
+                     for r in bt.sort_values(["trading_days", "candidate"],
+                                             key=lambda c: c if c.name == "trading_days" else c.ne("naive")).itertuples()])
+    is_ibja = anchor["anchor_source"].startswith("IBJA")
+    anchor_note = (f"Level anchored to <b>{anchor['anchor_source']} {pd.Timestamp(anchor['anchor_date']):%d %b %Y}</b>, moved by the "
+                   f"international price since." if is_ibja else
+                   f"<b>No IBJA data yet</b>: level from the landed-cost model ({p['import_duty_pct']:g}% duty, "
+                   f"premium {inr(p['local_premium_inr_10g'])}/10g). Set <code>IBJA_API_TOKEN</code> to anchor to IBJA.")
+    recon_rows = _rows([[f"{pd.Timestamp(r.rate_date):%d %b}", r.session, inr(r.ibja_ex_gst),
+                         inr(r.computed_ex_gst) if pd.notna(r.computed_ex_gst) else "–",
+                         f"{r.gap_vs_computed_pct:+.1f}%" if pd.notna(r.gap_vs_computed_pct) else "–"]
+                        for r in recon.itertuples()])
+    basis = result["basis"]
+    recon_card = (f"""<section class="card"><h2>IBJA reconciliation</h2>
+<table><tr><th>Date</th><th>Session</th><th>IBJA 999 (ex-GST)</th><th>Computed</th><th>Gap</th></tr>{recon_rows}</table>
+<p class="note">Gap = IBJA vs international price × duty, i.e. the domestic premium/discount.
+Basis volatility {100 * basis['daily_vol']:.2f}%/day from {basis['n_days']} IBJA days
+{"" if basis['n_days'] >= 20 else "(prior used until 20 days of history)"}; it widens the forecast range.</p></section>"""
+                  if len(recon) else "")
     dq_rows = _rows([[html.escape(r.check_name), r.severity,
                       f'<span class="pill {"ok" if r.passed else ("warn" if r.severity == "warn" else "bad")}">'
                       f'{"PASS" if r.passed else "FAIL"}</span>', html.escape(str(r.observed))]
@@ -103,29 +123,34 @@ th {{ font-weight:600; color:var(--muted); font-size:12px }}
  <div class="kpi"><b>{inr(sig['var95_week_inr'])}</b><span>1-week 95% VaR on {sig['inventory_grams']:,} g stock</span></div>
 </div></section>
 
-<section class="card"><h2>Rate board (₹, incl. {p['import_duty_pct']:g}% duty + {p['gst_pct']:g}% GST)</h2>
+<section class="card"><h2>Rate board (₹ per 10 g, incl. {p['gst_pct']:g}% GST)</h2>
 <table><tr><th>Purity</th><th>Market /10g</th><th>/g</th><th>We buy /10g</th><th>We sell /10g</th></tr>{board_rows}</table>
-<p class="note">Local premium applied: {inr(p['local_premium_inr_10g'])}/10g. Making charges extra. Run <code>calibrate</code> with the real Delhi board rate to align.</p></section>
+<p class="note">{anchor_note} Making charges extra.</p></section>
 
 <section class="card wide"><h2>24K Delhi ₹/10g — last 12 months + forecast ({conf}% range)</h2>
 <div style="position:relative;height:340px"><canvas id="c"></canvas></div></section>
 
 <section class="card"><h2>Forecast</h2>
-<table><tr><th>Horizon</th><th>Expected</th><th>{conf}% range</th><th>P(up)</th></tr>{fc_rows}</table>
+<table><tr><th>Horizon</th><th>Expected</th><th>{conf}% range</th><th>P(up)</th><th>Model</th></tr>{fc_rows}</table>
 <p class="note">The range is the useful part: price your buy-back/sell quotes and size stock so a move to either edge doesn't hurt.</p></section>
 
-<section class="card"><h2>Model honesty — walk-forward backtest</h2>
-<table><tr><th>Horizon</th><th>Model err</th><th>Naive err</th><th>Beats naive</th><th>Direction</th><th>In range</th></tr>{bt_rows}</table>
-<p class="note">Naive = "price stays where it is". Gold is close to a random walk; a ~50% direction hit-rate is normal. Range coverage near {conf}% means the bands are well calibrated.</p></section>
+<section class="card"><h2>Model competition — walk-forward backtest</h2>
+<table><tr><th>Horizon</th><th>Candidate</th><th>Avg error</th><th>vs naive</th><th>Direction</th><th>Range hit</th></tr>{bt_rows}</table>
+<p class="note">✓ = model in use. A candidate must beat naive ("price stays where it is") by
+{100 * settings['model']['min_improvement_vs_naive']:g}% to be chosen. Range hit = how often the actual price landed inside the range,
+judged day by day using only information available at the time; near {conf}% means the ranges can be trusted.</p></section>
+{recon_card}
 
 <section class="card"><h2>Data quality gate</h2>
 <table><tr><th>Check</th><th>Severity</th><th>Result</th><th>Observed</th></tr>{dq_rows}</table></section>
 
 <section class="card"><h2>Lineage</h2><div class="lineage">
-<b>Yahoo Finance</b> GC=F, INR=X<br>→ <b>bronze/</b> append-only Parquet, partitioned by ingest_date<br>
-→ <b>silver.market_prices</b> typed, de-duplicated (latest ingest wins)<br>
-→ <b>gold.fact_delhi_rate</b> FX forward-fill, landed-cost model<br>
-→ <b>gold.features</b> returns, SMA 20/50/200<br>→ <b>audit.dq_results</b> quality gate<br>
+<b>Yahoo Finance</b> GC=F, INR=X → <b>bronze/</b> Parquet<br>
+<b>IBJA API</b> 999/995/916/750/585 → <b>bronze_ibja/</b> JSON + Parquet<br>
+→ <b>silver.market_prices</b>, <b>silver.ibja_rates</b> typed, deduped<br>
+→ <b>gold.fact_delhi_rate</b> FX forward-fill, landed cost<br>
+→ <b>gold.fact_ibja_reconciliation</b> ASOF join, basis<br>
+→ <b>gold.anchor</b> → <b>gold.features</b><br>→ <b>audit.dq_results</b> quality gate<br>
 → <b>gold.forecast</b>, <b>gold.model_backtest</b> → this report</div></section>
 </div>
 {archive}

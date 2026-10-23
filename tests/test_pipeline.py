@@ -61,6 +61,20 @@ def test_quality_results_are_audited(settings):
         assert con.execute("SELECT count(*) FROM audit.dq_results WHERE run_id = 't1'").fetchone()[0] == len(quality.CHECKS)
 
 
+def test_naive_wins_on_a_pure_random_walk_and_ranges_are_calibrated(settings):
+    """No signal in the data -> the competition must not invent one, and the
+    conformal ranges must cover close to the target."""
+    import numpy as np
+    from goldpipe.model import backtest, select_and_calibrate
+    rng = np.random.default_rng(0)
+    lp = np.log(100000) + np.cumsum(rng.normal(0, 0.01, 1200))
+    cfg = dict(settings["model"], backtest_days=600, backtest_step=1)
+    scores, calib = select_and_calibrate(backtest(lp, cfg), cfg)
+    assert calib["next_day"]["model"] == "naive"
+    for h in calib.values():
+        assert 84 <= h["holdout_coverage_pct"] <= 96
+
+
 def test_forecast_bands_are_ordered_and_widen_with_horizon(settings):
     land(settings, synthetic_market())
     with build(settings) as con:
@@ -83,15 +97,13 @@ def test_model_rerun_is_idempotent(settings):
 
 
 def test_backtest_has_no_lookahead(settings):
-    """Changing the future must not change a forecast made in the past."""
+    """Shocking prices after an origin must not change errors scored before it."""
     import numpy as np
-    df = synthetic_market()
-    land(settings, df)
-    with build(settings) as con:
-        prices = con.execute("SELECT trade_date, price FROM gold.features ORDER BY 1").df().set_index("trade_date").price
-    cut = 300
-    a = model.forecast(prices.iloc[:cut], settings["model"])
-    shocked = prices.copy()
-    shocked.iloc[cut:] *= np.linspace(1, 2, len(prices) - cut)
-    b = model.forecast(shocked.iloc[:cut], settings["model"])
-    assert a.equals(b)
+    rng = np.random.default_rng(1)
+    lp = np.log(100000) + np.cumsum(rng.normal(0, 0.01, 700))
+    cfg = dict(settings["model"], backtest_days=200, backtest_step=5)
+    shocked = lp.copy()
+    shocked[650:] += 0.3
+    a, b = model.backtest(lp, cfg), model.backtest(shocked, cfg)
+    early = a.origin + a.trading_days < 650
+    assert np.allclose(a[early].z, b[early].z) and len(a[early]) > 0

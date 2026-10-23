@@ -67,7 +67,7 @@ def run(settings, today: date | None = None) -> Path | None:
     hwm = high_water_mark(bronze)
     start = (hwm - timedelta(days=OVERLAP_DAYS)) if hwm else \
         today - timedelta(days=365 * settings["sources"]["backfill_years"])
-    tickers = {k: v for k, v in settings["sources"].items() if k != "backfill_years"}
+    tickers = settings["sources"]["yahoo"]
     log.info("extract: %s -> %s (hwm=%s)", start, today, hwm)
 
     df = fetch(tickers, start, today)
