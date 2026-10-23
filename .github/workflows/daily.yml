@@ -1,0 +1,50 @@
+name: daily-gold-pipeline
+on:
+  schedule: [{cron: "0 13 * * 1-5"}]   # 18:30 IST, weekdays
+  workflow_dispatch:
+  push: {branches: [main]}
+  pull_request:
+
+concurrency: {group: gold-pipeline, cancel-in-progress: false}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -r requirements.txt
+      - run: make test
+
+  pipeline:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -r requirements.txt
+      # Bronze, warehouse and past reports persist between runs, so loads stay incremental.
+      # If the cache is ever evicted, the pipeline simply backfills (loads are idempotent).
+      - uses: actions/cache@v4
+        with:
+          path: |
+            data
+            reports
+          key: gold-state-${{ github.run_id }}
+          restore-keys: gold-state-
+      - run: make run
+      - run: make site
+      - uses: actions/upload-pages-artifact@v3
+        with: {path: _site}
+
+  deploy:
+    needs: pipeline
+    runs-on: ubuntu-latest
+    permissions: {pages: write, id-token: write}
+    environment: {name: github-pages, url: "${{ steps.deployment.outputs.page_url }}"}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

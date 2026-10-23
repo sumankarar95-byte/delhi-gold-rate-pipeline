@@ -1,0 +1,35 @@
+# Gold Rate Pipeline – Delhi
+# All business levers live here so they can be changed without touching code.
+
+sources:
+  gold_usd_oz: "GC=F"     # COMEX gold futures, USD per troy ounce
+  usd_inr: "INR=X"        # USD/INR spot
+  backfill_years: 6       # history pulled on first run
+
+pricing:                  # landed-cost model for Delhi 24K, ₹ per 10 g
+  grams_per_troy_oz: 31.1035
+  import_duty_pct: 6.0    # 5% BCD + 1% AIDC (Union Budget Jul-2024)
+  gst_pct: 3.0
+  local_premium_inr_10g: 0  # set via --calibrate with today's real Delhi rate
+  purities:
+    "24K": 0.999
+    "22K": 0.916
+    "18K": 0.750
+
+business:
+  buy_margin_pct: 1.5     # we buy from customers this much below market
+  sell_margin_pct: 1.0    # we sell this much above market (before making charges)
+  inventory_grams: 1000   # used for value-at-risk on stock
+
+model:
+  horizons: {next_day: 1, one_week: 5, one_month: 22}   # trading days
+  vol_halflife: 30
+  drift_window: 60
+  backtest_days: 250
+  backtest_step: 5
+  confidence: 0.90
+
+paths:
+  bronze: data/bronze
+  warehouse: data/warehouse.duckdb
+  reports: reports
