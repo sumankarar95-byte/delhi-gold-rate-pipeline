@@ -1,6 +1,7 @@
 """Forecasting: model competition + conformal ranges, all judged out-of-sample.
 
-* Candidates forecast the cumulative log return of the anchored Delhi rate:
+* Candidates forecast the cumulative log return of the Indian rate (IBJA level,
+  Gold BeES moves on Indian trading days):
   naive (no change), shrunk momentum, Holt damped trend, AR(1) on returns.
 * A walk-forward backtest scores every candidate at every horizon. The winner
   must beat naive by `min_improvement_vs_naive`, otherwise naive is used:
@@ -25,6 +26,7 @@ FIT_WINDOW = 500
 ACI_GAMMA = 0.01      # adaptation speed of the conformal miscoverage level
 ACI_WARMUP = 60       # realised errors needed before scoring coverage
 CANDIDATES = ("naive", "momentum", "holt_damped", "ar1")
+TARGET = "india_24k_incl_gst"   # what the forecast tables describe (schema change rebuilds them)
 
 
 def ewma_vol(log_ret: np.ndarray, halflife: int) -> float:
@@ -53,7 +55,7 @@ def candidate_paths(lp: np.ndarray, max_h: int, drift_window: int) -> dict[str, 
 
 
 def basis_vol(con, prior: float) -> tuple[float, int]:
-    """Daily vol of the IBJA/international basis; prior until we have enough IBJA history."""
+    """Daily vol of the IBJA/ETF tracking ratio; prior until we have enough IBJA history."""
     b = con.execute("""SELECT basis_ratio FROM gold.fact_ibja_reconciliation
                        WHERE session = 'PM' AND basis_ratio IS NOT NULL ORDER BY rate_date""").df()["basis_ratio"]
     n = len(b)
@@ -192,8 +194,9 @@ def run(con, settings, run_id: str) -> dict:
     fc = forecast(prices, cfg, calib, b_sigma)
     sig = business_signal(fc, feats.iloc[-1], settings["business"])
     as_of = pd.Timestamp(feats.index[-1]).date()
-    _replace_for_date(con, "forecast", fc.assign(run_id=run_id, as_of_date=as_of), as_of)
-    _replace_for_date(con, "model_backtest", scores.assign(run_id=run_id, as_of_date=as_of), as_of)
+    tag = {"run_id": run_id, "as_of_date": as_of, "target": TARGET}
+    _replace_for_date(con, "forecast", fc.assign(**tag), as_of)
+    _replace_for_date(con, "model_backtest", scores.assign(**tag), as_of)
     log.info("model: as_of=%s models=%s signal=%s P(up,1w)=%.0f%% basis_vol=%.2f%% (n=%d)", as_of,
              {k: v["model"] for k, v in calib.items()}, sig["action"], 100 * sig["prob_up_week"], 100 * b_sigma, b_n)
     return {"as_of": as_of, "forecast": fc, "backtest": scores, "signal": sig, "history": feats,

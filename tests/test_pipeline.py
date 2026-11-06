@@ -16,8 +16,8 @@ def test_landed_cost_formula(settings):
     land(settings, df)
     with build(settings) as con:
         gold_usd, fx, rate = con.execute(
-            "SELECT gold_usd_oz, usd_inr, delhi_24k_inr_10g FROM gold.fact_delhi_rate LIMIT 1").fetchone()
-    expected = gold_usd * fx / 31.1035 * 10 * 1.06 * 1.03
+            "SELECT gold_usd_oz, usd_inr, landed_ex_gst FROM gold.fact_intl_landed_cost LIMIT 1").fetchone()
+    expected = gold_usd * fx / 31.1035 * 10 * 1.06
     assert rate == pytest.approx(expected)
 
 
@@ -42,7 +42,7 @@ def test_fx_forward_filled_over_fx_holiday(settings):
     with build(settings) as con:
         imputed, fx, prev_fx = con.execute("""
             SELECT fx_imputed, usd_inr, lag(usd_inr) OVER (ORDER BY trade_date)
-            FROM gold.fact_delhi_rate QUALIFY trade_date = ?""", [holiday]).fetchone()
+            FROM gold.fact_intl_landed_cost QUALIFY trade_date = ?""", [holiday]).fetchone()
     assert imputed and fx == prev_fx
 
 
@@ -55,7 +55,7 @@ def test_quality_gate_blocks_bad_prices(settings):
 
 
 def test_quality_results_are_audited(settings):
-    land(settings, synthetic_market(n=30))
+    land(settings, synthetic_market(n=300))
     with build(settings) as con:
         quality.run(con, run_id="t1")
         assert con.execute("SELECT count(*) FROM audit.dq_results WHERE run_id = 't1'").fetchone()[0] == len(quality.CHECKS)
@@ -107,3 +107,48 @@ def test_backtest_has_no_lookahead(settings):
     a, b = model.backtest(lp, cfg), model.backtest(shocked, cfg)
     early = a.origin + a.trading_days < 650
     assert np.allclose(a[early].z, b[early].z) and len(a[early]) > 0
+
+
+def test_indian_rate_is_etf_times_default_ratio_without_ibja(settings):
+    df = synthetic_market(n=300)
+    land(settings, df)
+    with build(settings) as con:
+        price, etf, src = con.execute("""SELECT f.price, r.etf_close, k.source FROM gold.features f
+            JOIN gold.fact_india_rate r USING (trade_date), gold.etf_calibration k
+            ORDER BY trade_date DESC LIMIT 1""").fetchone()
+    assert src == "config default"
+    assert price == pytest.approx(etf * settings["india"]["etf_to_ibja_ratio_default"] * 1.03)
+
+
+def test_backup_etf_fills_a_missing_primary_day(settings):
+    df = synthetic_market(n=300)
+    gap = sorted(df.trade_date.unique())[-3]
+    df = df[~((df.series == "india_etf") & (df.trade_date == gap))]
+    land(settings, df)
+    with build(settings) as con:
+        imputed, close, prev = con.execute("""SELECT imputed, close, lag(close) OVER (ORDER BY trade_date)
+            FROM gold.india_etf QUALIFY trade_date = ?""", [gap]).fetchone()
+    assert imputed and close == pytest.approx(prev, rel=0.05)
+
+
+def test_mid_session_bar_is_ignored_until_the_market_closes(settings):
+    from datetime import datetime, timezone
+    df = synthetic_market(n=300)
+    last = sorted(df.trade_date.unique())[-1]
+    land(settings, df[df.trade_date < last])
+    # same day captured at 10:00 IST - NSE still open - must not count as the close
+    land(settings, df[df.trade_date == last], ingest="2026-01-02",
+         ingested_at=datetime.combine(last, datetime.min.time()).replace(hour=4, tzinfo=timezone.utc))
+    with build(settings) as con:
+        latest = con.execute("SELECT max(trade_date) FROM silver.market_prices WHERE series = 'india_etf'").fetchone()[0]
+    assert latest < last
+
+
+def test_last_completed_day_respects_market_close():
+    from datetime import date, datetime, timezone
+    from goldpipe.extract import last_completed_day
+    noon_ist = datetime(2026, 11, 6, 6, 30, tzinfo=timezone.utc)          # 12:00 IST
+    evening_ist = datetime(2026, 11, 6, 13, 0, tzinfo=timezone.utc)       # 18:30 IST, 08:00 New York
+    assert last_completed_day("Asia/Kolkata", "15:45", noon_ist) == date(2026, 11, 5)
+    assert last_completed_day("Asia/Kolkata", "15:45", evening_ist) == date(2026, 11, 6)
+    assert last_completed_day("America/New_York", "13:45", evening_ist) == date(2026, 11, 5)

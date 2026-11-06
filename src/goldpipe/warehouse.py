@@ -27,8 +27,12 @@ def load_reference(con, settings) -> None:
     purities = pd.DataFrame(list(p["purities"].items()), columns=["karat", "fineness"])
     business = pd.DataFrame([b])
     ibja = pd.DataFrame([{"benchmark_purity": settings["sources"]["ibja"]["benchmark_purity"]}])
+    india = pd.DataFrame([{k: v for k, v in settings["india"].items()}])
+    calendar = pd.DataFrame([{"series": k, "ticker": v["ticker"], "tz": v["tz"],
+                              "close_time": pd.Timedelta(v["close"] + ":00").to_pytimedelta()}
+                             for k, v in settings["sources"]["yahoo"].items()])
     for name, df in {"pricing_params": pricing, "purities": purities, "business_params": business,
-                     "ibja_params": ibja}.items():
+                     "ibja_params": ibja, "india_params": india, "series_calendar": calendar}.items():
         con.register("_df", df)
         con.execute(f"CREATE OR REPLACE TABLE ref.{name} AS SELECT * FROM _df")
         con.unregister("_df")
@@ -61,7 +65,10 @@ def run(settings) -> None:
     with connect(settings) as con:
         load_reference(con, settings)
         run_sql(con, settings)
-        n = con.execute("SELECT count(*), max(trade_date) FROM gold.fact_delhi_rate").fetchone()
-        log.info("transform: gold.fact_delhi_rate rows=%d latest=%s", *n)
-        src, ratio = con.execute("SELECT anchor_source || ' ' || anchor_date, ratio FROM gold.anchor").fetchone()
-        log.info("transform: level anchored to %s (ratio %.4f)", src, ratio)
+        n = con.execute("SELECT count(*), min(trade_date), max(trade_date) FROM gold.fact_india_rate").fetchone()
+        log.info("transform: gold.fact_india_rate rows=%d %s..%s", *n)
+        src, ratio, n_cal = con.execute("SELECT source, ratio, n_ibja_days FROM gold.etf_calibration").fetchone()
+        latest = con.execute("SELECT trade_date, price_source, india_999_ex_gst FROM gold.fact_india_rate "
+                             "ORDER BY trade_date DESC LIMIT 1").fetchone()
+        log.info("transform: ETF->IBJA ratio %.1f (%s, %d IBJA days); latest %s %s ₹%.0f/10g ex-GST",
+                 ratio, src, n_cal, *latest)

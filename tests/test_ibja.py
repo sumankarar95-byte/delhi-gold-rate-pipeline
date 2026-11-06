@@ -87,24 +87,27 @@ def test_ibja_matched_to_previous_close_no_lookahead(settings):
     assert intl_day == days[-2]          # strictly before the IBJA date
 
 
-def test_level_anchored_to_latest_ibja(settings):
+def test_ibja_sets_the_level_and_calibrates_the_etf(settings):
     days = sorted(synthetic_market(n=300).trade_date.unique())
-    after_last = days[-1] + timedelta(days=1)          # IBJA prints after the last COMEX close we have
-    con, _ = _build(settings, ibja_rows([after_last], 150000))
+    con, _ = _build(settings, ibja_rows(days[-5:], 150000))
     with con:
-        price, src = con.execute("SELECT f.price, a.anchor_source FROM gold.features f, gold.anchor a "
-                                 "ORDER BY trade_date DESC LIMIT 1").fetchone()
-    assert src == "IBJA PM"
+        price, src, k_src, n = con.execute(
+            "SELECT f.price, r.price_source, k.source, k.n_ibja_days FROM gold.features f "
+            "JOIN gold.fact_india_rate r USING (trade_date), gold.etf_calibration k "
+            "ORDER BY trade_date DESC LIMIT 1").fetchone()
+    assert src == "IBJA PM" and k_src == "IBJA-calibrated" and n == 5
     assert price == pytest.approx(150000 * 1.03)        # IBJA ex-GST + 3% GST
 
 
-def test_falls_back_to_landed_cost_without_ibja(settings):
-    con, _ = _build(settings, None)
+def test_etf_days_between_ibja_prints_use_calibrated_ratio(settings):
+    mkt = synthetic_market(n=300)
+    days = sorted(mkt.trade_date.unique())
+    con, _ = _build(settings, ibja_rows(days[-10:-5], 150000))
     with con:
-        src, price, modelled = con.execute(
-            "SELECT a.anchor_source, f.price, r.delhi_24k_inr_10g FROM gold.anchor a, gold.features f "
-            "JOIN gold.fact_delhi_rate r USING (trade_date) ORDER BY trade_date DESC LIMIT 1").fetchone()
-    assert src == "landed-cost model" and price == pytest.approx(modelled)
+        ratio = con.execute("SELECT ratio FROM gold.etf_calibration").fetchone()[0]
+        price, etf = con.execute("SELECT retail_24k_incl_gst, etf_close FROM gold.fact_india_rate "
+                                 "ORDER BY trade_date DESC LIMIT 1").fetchone()
+    assert price == pytest.approx(etf * ratio * 1.03)
 
 
 def test_dq_catches_purity_mixup(settings):

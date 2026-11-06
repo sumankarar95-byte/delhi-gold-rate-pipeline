@@ -31,16 +31,29 @@ CHECKS = [
     Check("usd_inr_in_range", "error",
           """SELECT bool_and(close BETWEEN 40 AND 200), round(min(close), 1) || '..' || round(max(close), 1)
              FROM silver.market_prices WHERE series = 'usd_inr'"""),
-    Check("delhi_rate_not_null", "error",
-          "SELECT count(*) FILTER (delhi_24k_inr_10g IS NULL) = 0, count(*) FILTER (delhi_24k_inr_10g IS NULL)::VARCHAR FROM gold.fact_delhi_rate"),
+    # --- Indian rate (the forecast target) ---
+    Check("india_etf_loaded", "error",
+          """SELECT count(*) > 250, count(*)::VARCHAR || ' days'
+             FROM silver.market_prices WHERE series = (SELECT etf_series FROM ref.india_params)"""),
+    Check("india_etf_no_split_or_bad_tick", "error",   # unit splits / bad prints show up as huge jumps
+          """SELECT coalesce(max(abs(r)), 0) < 0.15, round(100 * coalesce(max(abs(r)), 0), 2) || '%'
+             FROM (SELECT ln(close / lag(close) OVER (ORDER BY trade_date)) AS r FROM silver.market_prices
+                   WHERE series = (SELECT etf_series FROM ref.india_params))"""),
+    Check("india_etf_gapfill_below_5pct", "warn",     # backup ETF used for a missing Gold BeES bar
+          """SELECT coalesce(avg(imputed::INT), 0) < 0.05, coalesce(sum(imputed::INT), 0)::VARCHAR || ' of last 250 days'
+             FROM (SELECT imputed FROM gold.india_etf ORDER BY trade_date DESC LIMIT 250)"""),
+    Check("india_rate_not_null", "error",
+          "SELECT count(*) FILTER (price IS NULL) = 0, count(*) FILTER (price IS NULL)::VARCHAR FROM gold.features"),
+    Check("india_rate_fresh_within_4_days", "warn",
+          "SELECT current_date - max(trade_date) <= 4, (current_date - max(trade_date))::VARCHAR || ' days' FROM gold.fact_india_rate"),
     # Only recent rows: historic shocks (e.g. Jan-2026 crash) are real, new ones need a human look.
     Check("no_extreme_move_last_10d", "warn",
           """SELECT coalesce(max(abs(log_ret)), 0) < 0.05, round(coalesce(max(abs(log_ret)), 0) * 100, 2) || '%'
              FROM (SELECT log_ret FROM gold.features ORDER BY trade_date DESC LIMIT 10)"""),
     Check("fx_imputation_below_5pct", "warn",
-          "SELECT avg(fx_imputed::INT) < 0.05, round(avg(fx_imputed::INT) * 100, 2) || '%' FROM gold.fact_delhi_rate"),
+          "SELECT avg(fx_imputed::INT) < 0.05, round(avg(fx_imputed::INT) * 100, 2) || '%' FROM gold.fact_intl_landed_cost"),
     Check("data_fresh_within_5_days", "warn",
-          "SELECT current_date - max(trade_date) <= 5, (current_date - max(trade_date))::VARCHAR || ' days' FROM gold.fact_delhi_rate"),
+          "SELECT current_date - max(trade_date) <= 5, (current_date - max(trade_date))::VARCHAR || ' days' FROM gold.fact_intl_landed_cost"),
     # --- IBJA (all pass vacuously when no IBJA data is loaded) ---
     Check("ibja_rates_in_range", "error",
           """SELECT coalesce(bool_and(gold_rate_inr_10g BETWEEN 10000 AND 1000000), true),
@@ -51,6 +64,10 @@ CHECKS = [
              FROM (SELECT p916.gold_rate_inr_10g / p999.gold_rate_inr_10g AS r
                    FROM silver.ibja_rates p999 JOIN silver.ibja_rates p916 USING (rate_date, session)
                    WHERE p999.purity = '999' AND p916.purity = '916')"""),
+    Check("ibja_vs_etf_within_2pct", "warn",          # ETF tracking of IBJA (same day, PM)
+          """SELECT coalesce(bool_and(abs(gap_vs_etf_pct) < 2), true),
+                    coalesce(round(min(gap_vs_etf_pct), 2) || '..' || round(max(gap_vs_etf_pct), 2) || '%', 'no data')
+             FROM gold.fact_ibja_reconciliation WHERE session = 'PM' AND gap_vs_etf_pct IS NOT NULL"""),
     Check("ibja_vs_computed_within_20pct", "warn",
           """SELECT coalesce(bool_and(abs(gap_vs_computed_pct) < 20), true),
                     coalesce(round(min(gap_vs_computed_pct), 1) || '..' || round(max(gap_vs_computed_pct), 1) || '%', 'no data')

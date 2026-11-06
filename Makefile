@@ -15,3 +15,6 @@ clean:      ; rm -rf data reports
 
 # Static site for GitHub Pages: latest dashboard as index + dated snapshots.
 site: ; rm -rf _site && mkdir -p _site && cp reports/*.html _site/ && cp reports/gold_dashboard.html _site/index.html
+
+# Optional: benchmark Chronos-2 / TimesFM 2.5 against the pipeline's models (needs requirements-bench.txt)
+bench: ; $(PY) benchmarks/foundation_models.py

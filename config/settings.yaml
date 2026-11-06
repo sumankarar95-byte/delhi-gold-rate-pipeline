@@ -2,9 +2,25 @@
 # All business levers live here so they can be changed without touching code.
 
 sources:
-  yahoo:                    # long history of international drivers
-    gold_usd_oz: "GC=F"     # COMEX gold futures, USD per troy ounce
-    usd_inr: "INR=X"        # USD/INR spot
+  yahoo:                    # tz/close: a bar is only loaded once its market has closed
+    india_etf:              # Nippon India ETF Gold BeES (NSE): the Indian price series we model
+      ticker: "GOLDBEES.NS"
+      tz: Asia/Kolkata
+      close: "15:45"
+      history_start: "2020-01-01"   # Yahoo's pre-2020 data has a broken 1:100 unit-split adjustment
+    india_etf_backup:       # Kotak Gold ETF (NSE): fills the rare days Yahoo drops a Gold BeES bar
+      ticker: "GOLD1.NS"
+      tz: Asia/Kolkata
+      close: "15:45"
+      history_start: "2020-01-01"
+    gold_usd_oz:            # COMEX gold futures, USD/oz: reference only (Indian premium tracking)
+      ticker: "GC=F"
+      tz: America/New_York
+      close: "13:45"
+    usd_inr:                # USD/INR spot: reference only
+      ticker: "INR=X"
+      tz: America/New_York
+      close: "17:00"
   backfill_years: 6         # history pulled on first run
   ibja:                     # India's benchmark rate (official, licensed API)
     url: "https://ibjarates.com/API/GoldRates/"
@@ -14,11 +30,19 @@ sources:
     lookback_days: 29       # API serves at most the last 30 days per call
     benchmark_purity: "999"
 
-pricing:                  # landed-cost model for Delhi 24K, ₹ per 10 g
+india:                    # how the Indian rate is built
+  etf_series: india_etf
+  etf_backup_series: india_etf_backup
+  # IBJA 999 PM (₹/10g, ex-GST) ÷ Gold BeES close. Used until IBJA data is loaded;
+  # observed 1216–1222 over 8 days in Oct–Nov 2026. Drifts up slowly (ETF expense ratio).
+  etf_to_ibja_ratio_default: 1219
+  ratio_window: 20          # IBJA days used to recalibrate the ratio (median)
+
+pricing:                  # landed-cost model: international reference only
   grams_per_troy_oz: 31.1035
   import_duty_pct: 6.0    # 5% BCD + 1% AIDC (Union Budget Jul-2024)
   gst_pct: 3.0
-  local_premium_inr_10g: 0  # fallback only (no IBJA data): set via `calibrate`
+  local_premium_inr_10g: 0  # added to the Indian rate (e.g. a Delhi dealer premium), ₹/10g incl. GST
   purities:
     "24K": 0.999
     "22K": 0.916
@@ -37,7 +61,7 @@ model:
   backtest_step: 1    # every day: more errors for conformal calibration
   confidence: 0.90
   min_improvement_vs_naive: 0.02   # a model must beat "no change" by 2% MAE to be used
-  basis_daily_vol_prior: 0.004     # IBJA-vs-international basis noise until enough IBJA history
+  basis_daily_vol_prior: 0.002     # IBJA-vs-ETF tracking noise until 20 days of IBJA history
 
 paths:
   bronze: data/bronze

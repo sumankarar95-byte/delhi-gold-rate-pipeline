@@ -23,8 +23,11 @@ def synthetic_market(n=400, seed=7, start=date(2025, 1, 1)) -> pd.DataFrame:
     days = pd.bdate_range(start, periods=n).date
     gold = 2600 * np.exp(np.cumsum(rng.normal(0.0004, 0.01, n)))
     fx = 85 * np.exp(np.cumsum(rng.normal(0, 0.002, n)))
+    etf = 115 * (gold * fx) / (gold[-1] * fx[-1]) * np.exp(rng.normal(0, 0.002, n))   # Indian ETF tracks ₹ gold
+    backup = etf * 1.01 * np.exp(rng.normal(0, 0.001, n))
     rows = []
-    for series, ticker, px in (("gold_usd_oz", "GC=F", gold), ("usd_inr", "INR=X", fx)):
+    for series, ticker, px in (("gold_usd_oz", "GC=F", gold), ("usd_inr", "INR=X", fx),
+                               ("india_etf", "GOLDBEES.NS", etf), ("india_etf_backup", "GOLD1.NS", backup)):
         rows.append(pd.DataFrame({"trade_date": days, "open": px, "high": px, "low": px, "close": px,
                                   "series": series, "ticker": ticker}))
     return pd.concat(rows, ignore_index=True)

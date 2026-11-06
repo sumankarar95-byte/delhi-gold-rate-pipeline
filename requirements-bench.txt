@@ -1,0 +1,5 @@
+# Optional: foundation-model benchmark only (not needed for the daily pipeline)
+-r requirements.txt
+chronos-forecasting>=2.0
+timesfm>=2.0
+torch>=2.3

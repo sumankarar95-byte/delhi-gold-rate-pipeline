@@ -3,7 +3,7 @@
 
     python -m goldpipe.pipeline run              # full pipeline
     python -m goldpipe.pipeline extract|transform|quality|model|report
-    python -m goldpipe.pipeline calibrate 128450 # fallback when no IBJA data: today's real 24K ₹/10g
+    python -m goldpipe.pipeline calibrate 148450 # optional local premium: your real 24K ₹/10g incl. GST
     python -m goldpipe.pipeline import-ibja rates.csv   # seed IBJA history
 """
 from __future__ import annotations
@@ -44,18 +44,20 @@ def stage_report(settings, run_id, result=None, dq=None):
             dq = con.execute("SELECT * FROM audit.dq_results WHERE run_id = "
                              "(SELECT max(run_id) FROM audit.dq_results)").df()
         board = con.execute("SELECT * FROM gold.v_rate_board WHERE trade_date = "
-                            "(SELECT max(trade_date) FROM gold.fact_delhi_rate) ORDER BY fineness DESC").df()
-        anchor = con.execute("SELECT * FROM gold.anchor").df().iloc[0].to_dict()
+                            "(SELECT max(trade_date) FROM gold.features) ORDER BY fineness DESC").df()
+        calib = con.execute("SELECT * FROM gold.etf_calibration").df().iloc[0].to_dict()
+        calib["latest_source"] = con.execute("SELECT price_source FROM gold.fact_india_rate "
+                                             "ORDER BY trade_date DESC LIMIT 1").fetchone()[0]
         recon = con.execute("SELECT * FROM gold.fact_ibja_reconciliation "
                             "ORDER BY rate_date DESC, session DESC LIMIT 8").df()
-        return report.render(settings, run_id, result, dq, board, anchor, recon)
+        return report.render(settings, run_id, result, dq, board, calib, recon)
 
 
 def calibrate(settings, actual_rate: float) -> None:
-    """Set local premium so the model matches the observed Delhi 24K rate today."""
+    """Set a local (e.g. Delhi dealer) premium so the board matches your observed 24K rate incl. GST."""
     with warehouse.connect(settings) as con:
         modelled, current_premium = con.execute(
-            "SELECT delhi_24k_inr_10g, p.local_premium_inr_10g FROM gold.fact_delhi_rate, ref.pricing_params p "
+            "SELECT retail_24k_incl_gst, p.local_premium_inr_10g FROM gold.fact_india_rate, ref.pricing_params p "
             "ORDER BY trade_date DESC LIMIT 1").fetchone()
     premium = round(actual_rate - (modelled - current_premium))
     cfg = ROOT / "config" / "settings.yaml"

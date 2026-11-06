@@ -26,7 +26,7 @@ def _rows(cells: list[list[str]]) -> str:
 
 
 def render(settings, run_id: str, result: dict, dq: pd.DataFrame, board: pd.DataFrame,
-           anchor: dict, recon: pd.DataFrame):
+           calib: dict, recon: pd.DataFrame):
     fc, bt, sig, hist = result["forecast"], result["backtest"], result["signal"], result["history"]
     as_of = result["as_of"]
     recent = hist.iloc[-260:]
@@ -54,20 +54,24 @@ def render(settings, run_id: str, result: dict, dq: pd.DataFrame, board: pd.Data
                       f"{r.holdout_coverage_pct:.0f}%" if r.selected else ""]
                      for r in bt.sort_values(["trading_days", "candidate"],
                                              key=lambda c: c if c.name == "trading_days" else c.ne("naive")).itertuples()])
-    is_ibja = anchor["anchor_source"].startswith("IBJA")
-    anchor_note = (f"Level anchored to <b>{anchor['anchor_source']} {pd.Timestamp(anchor['anchor_date']):%d %b %Y}</b>, moved by the "
-                   f"international price since." if is_ibja else
-                   f"<b>No IBJA data yet</b>: level from the landed-cost model ({p['import_duty_pct']:g}% duty, "
-                   f"premium {inr(p['local_premium_inr_10g'])}/10g). Set <code>IBJA_API_TOKEN</code> to anchor to IBJA.")
+    if calib["source"] == "IBJA-calibrated":
+        source_note = (f"Indian rate: {calib['latest_source']} (Gold BeES scaled to IBJA with ratio "
+                       f"{calib['ratio']:.1f}, calibrated on {int(calib['n_ibja_days'])} IBJA days).")
+    else:
+        source_note = (f"Indian rate: Gold BeES (NSE) × {calib['ratio']:.0f}, the observed IBJA ratio. "
+                       f"<b>No IBJA data loaded</b>: set <code>IBJA_API_TOKEN</code> to use IBJA directly.")
+    if p["local_premium_inr_10g"]:
+        source_note += f" Local premium {inr(p['local_premium_inr_10g'])}/10g added."
     recon_rows = _rows([[f"{pd.Timestamp(r.rate_date):%d %b}", r.session, inr(r.ibja_ex_gst),
-                         inr(r.computed_ex_gst) if pd.notna(r.computed_ex_gst) else "–",
+                         inr(r.etf_implied_ex_gst) if pd.notna(r.etf_implied_ex_gst) else "–",
+                         f"{r.gap_vs_etf_pct:+.2f}%" if pd.notna(r.gap_vs_etf_pct) else "–",
                          f"{r.gap_vs_computed_pct:+.1f}%" if pd.notna(r.gap_vs_computed_pct) else "–"]
                         for r in recon.itertuples()])
     basis = result["basis"]
     recon_card = (f"""<section class="card"><h2>IBJA reconciliation</h2>
-<table><tr><th>Date</th><th>Session</th><th>IBJA 999 (ex-GST)</th><th>Computed</th><th>Gap</th></tr>{recon_rows}</table>
-<p class="note">Gap = IBJA vs international price × duty, i.e. the domestic premium/discount.
-Basis volatility {100 * basis['daily_vol']:.2f}%/day from {basis['n_days']} IBJA days
+<table><tr><th>Date</th><th>Session</th><th>IBJA 999 (ex-GST)</th><th>Gold BeES-implied</th><th>Tracking gap</th><th>Premium vs intl</th></tr>{recon_rows}</table>
+<p class="note">Tracking gap = IBJA vs the ETF-implied rate. Premium vs intl = IBJA vs international price + duty.
+Tracking noise {100 * basis['daily_vol']:.2f}%/day from {basis['n_days']} IBJA days
 {"" if basis['n_days'] >= 20 else "(prior used until 20 days of history)"}; it widens the forecast range.</p></section>"""
                   if len(recon) else "")
     dq_rows = _rows([[html.escape(r.check_name), r.severity,
@@ -125,9 +129,9 @@ th {{ font-weight:600; color:var(--muted); font-size:12px }}
 
 <section class="card"><h2>Rate board (₹ per 10 g, incl. {p['gst_pct']:g}% GST)</h2>
 <table><tr><th>Purity</th><th>Market /10g</th><th>/g</th><th>We buy /10g</th><th>We sell /10g</th></tr>{board_rows}</table>
-<p class="note">{anchor_note} Making charges extra.</p></section>
+<p class="note">{source_note} Making charges extra.</p></section>
 
-<section class="card wide"><h2>24K Delhi ₹/10g — last 12 months + forecast ({conf}% range)</h2>
+<section class="card wide"><h2>24K India ₹/10g incl. GST — last 12 months + forecast ({conf}% range)</h2>
 <div style="position:relative;height:340px"><canvas id="c"></canvas></div></section>
 
 <section class="card"><h2>Forecast</h2>
@@ -145,12 +149,13 @@ judged day by day using only information available at the time; near {conf}% mea
 <table><tr><th>Check</th><th>Severity</th><th>Result</th><th>Observed</th></tr>{dq_rows}</table></section>
 
 <section class="card"><h2>Lineage</h2><div class="lineage">
-<b>Yahoo Finance</b> GC=F, INR=X → <b>bronze/</b> Parquet<br>
+<b>Yahoo Finance</b> GOLDBEES.NS (NSE), GC=F, INR=X → <b>bronze/</b> Parquet<br>
 <b>IBJA API</b> 999/995/916/750/585 → <b>bronze_ibja/</b> JSON + Parquet<br>
-→ <b>silver.market_prices</b>, <b>silver.ibja_rates</b> typed, deduped<br>
-→ <b>gold.fact_delhi_rate</b> FX forward-fill, landed cost<br>
-→ <b>gold.fact_ibja_reconciliation</b> ASOF join, basis<br>
-→ <b>gold.anchor</b> → <b>gold.features</b><br>→ <b>audit.dq_results</b> quality gate<br>
+→ <b>silver.market_prices</b> final bars only, <b>silver.ibja_rates</b><br>
+→ <b>gold.etf_calibration</b> IBJA ÷ Gold BeES<br>
+→ <b>gold.fact_india_rate</b> IBJA, else ETF × ratio<br>
+→ <b>gold.fact_intl_landed_cost</b>, <b>gold.fact_ibja_reconciliation</b> (reference)<br>
+→ <b>gold.features</b> → <b>audit.dq_results</b> quality gate<br>
 → <b>gold.forecast</b>, <b>gold.model_backtest</b> → this report</div></section>
 </div>
 {archive}
